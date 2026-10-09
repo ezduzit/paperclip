@@ -2163,4 +2163,76 @@ describeEmbeddedPostgres("attention service", () => {
     }
     expect(byKey.get(`approval:${queueApprovalId}`)).toMatchObject({ shelf: true, retentionDays: 10 });
   });
+
+  it("inlines a pending user-owned stage and names its participant, for review and approval alike", async () => {
+    const { companyId, workerId } = await seedCompany("ATS");
+    const reviewIssueId = await insertIssue({
+      companyId,
+      identifier: "ATS-1",
+      title: "User reviewer decides",
+      status: "in_review",
+      // Assigned to the agent, not to the reviewer: a stage excludes the return
+      // assignee from its own participants.
+      assigneeAgentId: workerId,
+      executionState: pendingUserExecutionState("board-user"),
+      updatedAt: new Date("2026-07-09T12:00:00.000Z"),
+    });
+    const approvalIssueId = await insertIssue({
+      companyId,
+      identifier: "ATS-2",
+      title: "User approver decides",
+      status: "in_review",
+      assigneeAgentId: workerId,
+      executionState: { ...pendingUserExecutionState("board-user"), currentStageType: "approval" },
+      updatedAt: new Date("2026-07-09T12:01:00.000Z"),
+    });
+
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+
+    for (const [issueId, stageType] of [[reviewIssueId, "review"], [approvalIssueId, "approval"]] as const) {
+      const row = feed.items.find((item) => item.sourceKind === "review" && item.subject.id === issueId);
+      expect(row).toMatchObject({
+        // The row carries a decision its participant can take in place, so it
+        // resolves inline instead of offering a dead deep link.
+        inlineResolvable: true,
+        whyNow: expect.stringContaining("current execution participant is a user"),
+        subject: expect.objectContaining({
+          metadata: expect.objectContaining({
+            executionParticipantUserId: "board-user",
+            executionStageType: stageType,
+          }),
+        }),
+        decisionVerbs: expect.arrayContaining([
+          expect.objectContaining({ id: "approve", label: "Approve" }),
+          expect.objectContaining({ id: "request_changes", label: "Request changes" }),
+        ]),
+      });
+      // Not a stalled review: it keeps the pending-stage verbs, not the
+      // stalled ones, so the two paths stay distinguishable in the row.
+      expect(row?.subject.metadata?.reviewAttentionState).toBeUndefined();
+    }
+  });
+
+  it("keeps an agent-owned review row deep-linking even when a user is the assignee", async () => {
+    const { companyId, reviewerId } = await seedCompany("ATT");
+    const issueId = await insertIssue({
+      companyId,
+      identifier: "ATT-1",
+      title: "Agent reviewer with user assignee",
+      status: "in_review",
+      assigneeUserId: "board-user",
+      executionState: pendingAgentExecutionState(reviewerId),
+      updatedAt: new Date("2026-07-09T12:00:00.000Z"),
+    });
+
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const row = feed.items.find((item) => item.sourceKind === "review" && item.subject.id === issueId);
+
+    // The row still appears — a user assignee earns it — but the verdict belongs
+    // to the agent, so no viewer gets inline controls for it.
+    expect(row).toBeDefined();
+    expect(row?.inlineResolvable).toBe(false);
+    expect(row?.subject.metadata?.executionParticipantUserId).toBeUndefined();
+    expect(row?.subject.metadata?.executionStageType).toBeUndefined();
+  });
 });

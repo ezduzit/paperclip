@@ -2867,6 +2867,106 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
+  // The pending stage the viewing user owns. Before this panel the issue page
+  // had no decision control at all, so the only way to approve was the status
+  // dropdown — which sends no comment and is refused for that reason.
+  const userStageIssue = (
+    stageType: "review" | "approval",
+    participant: IssueExecutionState["currentParticipant"],
+  ) =>
+    createIssue({
+      status: "in_review",
+      // Assigned to an agent: a stage excludes the return assignee from its own
+      // participants, so a user who is both cannot be selected to decide.
+      assigneeAgentId: "agent-2",
+      executionPolicy: createExecutionPolicy({
+        stages: [
+          {
+            id: "00000000-0000-4000-8000-000000000010",
+            type: stageType,
+            approvalsNeeded: 1,
+            participants: [{ id: "00000000-0000-4000-8000-000000000012", type: "user", agentId: null, userId: "user-1" }],
+          },
+        ],
+      }),
+      executionState: createExecutionState({
+        status: "pending",
+        currentStageType: stageType,
+        currentParticipant: participant,
+        returnAssignee: { type: "agent", agentId: "agent-2", userId: null },
+        lastDecisionOutcome: null,
+      }),
+    });
+
+  it.each([
+    ["review", "Your review", "Approve review"],
+    ["approval", "Your approval", "Approve"],
+  ] as const)("offers the %s verdict to the user who owns the stage", async (stageType, heading, approveLabel) => {
+    const root = renderProperties(container, {
+      issue: userStageIssue(stageType, { type: "user", agentId: null, userId: "user-1" }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+    await flush();
+
+    // The panel waits on the viewer's own session, so it arrives a tick behind
+    // the rest of the panel.
+    await waitForAssertion(() => {
+      expect(container.querySelector('[data-testid="issue-execution-stage-decision"]')).not.toBeNull();
+    });
+    expect(container.textContent).toContain(heading);
+    expect(container.textContent).toContain(approveLabel);
+    expect(container.textContent).toContain("Request changes");
+    // The comment travels with the decision, because the server reads only the
+    // one sent in the same request.
+    expect(container.querySelector('[data-testid="execution-stage-decision-comment"]')).not.toBeNull();
+
+    act(() => root.unmount());
+  });
+
+  it("shows no verdict for an agent-owned stage or for another user's stage", async () => {
+    for (const participant of [
+      { type: "agent" as const, agentId: "agent-1", userId: null },
+      { type: "user" as const, agentId: null, userId: "user-9" },
+    ]) {
+      const root = renderProperties(container, {
+        issue: userStageIssue("review", participant),
+        childIssues: [],
+        onUpdate: vi.fn(),
+      });
+      // Wait for the user directory first, so the absence below means the panel
+      // declined to render and not that the viewer was still unknown.
+      await waitForAssertion(() => {
+        expect(container.textContent).toContain("Riley Board");
+      });
+
+      expect(container.querySelector('[data-testid="issue-execution-stage-decision"]')).toBeNull();
+      expect(container.textContent).not.toContain("Your review");
+
+      act(() => root.unmount());
+    }
+  });
+
+  it("keeps the verdict reachable when the execution policy cannot be read", async () => {
+    // The decision comes from the live execution state, not from the policy, so
+    // an unreadable policy must not strand the stage it is waiting on.
+    const issue = userStageIssue("review", { type: "user", agentId: null, userId: "user-1" });
+    const root = renderProperties(container, {
+      issue: { ...issue, executionPolicy: { stages: {} } as unknown as IssueExecutionPolicy },
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+    await flush();
+
+    expect(container.textContent).toContain("Execution policy unavailable. Refresh to try again.");
+    await waitForAssertion(() => {
+      expect(container.querySelector('[data-testid="issue-execution-stage-decision"]')).not.toBeNull();
+    });
+    expect(container.textContent).toContain("Approve review");
+
+    act(() => root.unmount());
+  });
+
   it("renders monitor controls and clears an existing monitor", async () => {
     const dateNowSpy = vi.spyOn(Date, "now").mockReturnValue(new Date("2026-04-11T10:00:00.000Z").getTime());
     const onUpdate = vi.fn();

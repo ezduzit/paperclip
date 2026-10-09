@@ -32,6 +32,7 @@ vi.mock("../api/issues", () => ({
     acceptInteraction: vi.fn(),
     rejectInteraction: vi.fn(),
     decideStalledReview: vi.fn(() => Promise.resolve({})),
+    update: vi.fn(() => Promise.resolve({})),
   },
 }));
 
@@ -179,6 +180,124 @@ describe("AttentionQueueRow", () => {
     expect(el.textContent).toContain("Approve");
     expect(el.textContent).toContain("Request changes");
     expect(el.textContent).toContain("Send back to work");
+  });
+
+  // A pending execution stage owned by a user is the *other* inline review row.
+  // It is personal: only the participant decides it, so the same item has to
+  // read differently for them than for anybody else on the board.
+  const pendingStageItem = (stageType: "review" | "approval") =>
+    buildItem({
+      sourceKind: "review" as AttentionSourceKind,
+      inlineResolvable: true,
+      subject: {
+        kind: "issue",
+        id: "issue-1",
+        companyId: "c1",
+        title: "PR ready for review",
+        identifier: null,
+        status: "in_review",
+        href: "/PAP/issues/PAP-1",
+        metadata: {
+          executionParticipantUserId: "user-1",
+          executionStageType: stageType,
+        },
+      },
+    });
+
+  it("gives the stage participant Approve and Request changes in place", () => {
+    const el = render(
+      <AttentionQueueRow
+        item={pendingStageItem("review")}
+        companyId="c1"
+        expanded
+        onToggleExpand={noop}
+        currentUserId="user-1"
+        onDismiss={noop}
+      />,
+    );
+    expect(el.querySelector('[data-testid="execution-stage-decision"]')).not.toBeNull();
+    expect(el.textContent).toContain("Approve review");
+    expect(el.textContent).toContain("Request changes");
+    // The pending stage is not a stalled review: no third verb, and the stalled
+    // card must not be the thing that rendered.
+    expect(el.textContent).not.toContain("Send back to work");
+    expect(el.querySelector('[data-testid="stalled-review-note"]')).toBeNull();
+    // It resolves here, so it does not also offer a deep link.
+    expect(el.textContent).not.toContain("Open");
+  });
+
+  it("labels the approval stage as its own verdict", () => {
+    const el = render(
+      <AttentionQueueRow
+        item={pendingStageItem("approval")}
+        companyId="c1"
+        expanded
+        onToggleExpand={noop}
+        currentUserId="user-1"
+        onDismiss={noop}
+      />,
+    );
+    expect(el.querySelector('[data-testid="execution-stage-decision"]')).not.toBeNull();
+    expect(el.textContent).toContain("Approve");
+    expect(el.textContent).not.toContain("Approve review");
+  });
+
+  it("keeps the same row a deep link for a board user who is not the participant", () => {
+    const el = render(
+      <AttentionQueueRow
+        item={pendingStageItem("review")}
+        companyId="c1"
+        expanded
+        onToggleExpand={noop}
+        currentUserId="user-2"
+        onDismiss={noop}
+      />,
+    );
+    // `inlineResolvable` describes the item, not the reader. Another board user
+    // sees the decision exists and opens the issue; they do not get the verdict.
+    expect(el.querySelector('[data-testid="execution-stage-decision"]')).toBeNull();
+    expect(el.querySelector('[data-testid="stalled-review-note"]')).toBeNull();
+    expect(el.textContent).toContain("Open");
+  });
+
+  it("sends the status and the comment in one request, and never sends todo", async () => {
+    const update = vi.mocked(issuesApi.update);
+    const el = render(
+      <AttentionQueueRow
+        item={pendingStageItem("review")}
+        companyId="c1"
+        expanded
+        onToggleExpand={noop}
+        currentUserId="user-1"
+        onDismiss={noop}
+      />,
+    );
+    const comment = el.querySelector<HTMLTextAreaElement>('[data-testid="execution-stage-decision-comment"]')!;
+    const requestChanges = el.querySelector<HTMLButtonElement>(
+      '[data-testid="execution-stage-decision-request-changes"]',
+    )!;
+    // Both verdicts need a comment: the server only reads the one sent with the
+    // status, so a disabled button is the honest state.
+    expect(requestChanges.disabled).toBe(true);
+
+    act(() => {
+      // React reads the value through its own descriptor, so go through the
+      // native setter to make the change visible to it.
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(
+        comment,
+        "Please split the migration out.",
+      );
+      comment.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    act(() => requestChanges.click());
+    await act(async () => {});
+
+    // `in_progress`, not `todo`: a board actor sending todo takes the override
+    // branch, which drops the stage without recording the decision.
+    expect(update).toHaveBeenCalledWith("issue-1", {
+      status: "in_progress",
+      comment: "Please split the migration out.",
+    });
   });
 
   // PAP-16506 P4: an opt-in policy warns before the card offers Approve, because

@@ -402,6 +402,156 @@ describe("issue execution policy transitions", () => {
     });
   });
 
+  /**
+   * The two PATCHes the issue page's and /decisions card's decision controls
+   * send for a stage whose participant is a *user*. The transition itself is
+   * unchanged by that UI — these pin the contract the controls are written
+   * against, including the status they must never send.
+   */
+  describe("user participant decisions", () => {
+    const policy = makePolicy([
+      { type: "review", participants: [{ type: "user", userId: ctoUserId }] },
+      { type: "approval", participants: [{ type: "user", userId: boardUserId }] },
+    ]);
+    const reviewStageId = policy.stages[0].id;
+    const approvalStageId = policy.stages[1].id;
+
+    const pendingUserReview = (): IssueExecutionState => ({
+      status: "pending",
+      currentStageId: reviewStageId,
+      currentStageIndex: 0,
+      currentStageType: "review",
+      currentParticipant: { type: "user", userId: ctoUserId },
+      returnAssignee: { type: "agent", agentId: coderAgentId },
+      completedStageIds: [],
+      lastDecisionId: null,
+      lastDecisionOutcome: null,
+    });
+
+    const decide = (requestedStatus: string, commentBody?: string, state = pendingUserReview()) =>
+      applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          // The reviewer is not the assignee: a stage excludes its return
+          // assignee from participant selection.
+          assigneeAgentId: null,
+          assigneeUserId: ctoUserId,
+          executionPolicy: policy,
+          executionState: state,
+        },
+        policy,
+        requestedStatus: requestedStatus as "done",
+        requestedAssigneePatch: {},
+        actor: { userId: ctoUserId },
+        commentBody,
+      });
+
+    it("approves a review stage from a user reviewer and advances to approval", () => {
+      const result = decide("done", "Read it end to end, this is right.");
+
+      expect(result.patch.executionState).toMatchObject({
+        status: "pending",
+        currentStageType: "approval",
+        completedStageIds: [reviewStageId],
+        currentParticipant: { type: "user", userId: boardUserId },
+      });
+      expect(result.decision).toMatchObject({
+        stageId: reviewStageId,
+        stageType: "review",
+        outcome: "approved",
+        body: "Read it end to end, this is right.",
+      });
+    });
+
+    it("approves an approval stage from a user approver and completes the policy", () => {
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: null,
+          assigneeUserId: boardUserId,
+          executionPolicy: policy,
+          executionState: {
+            ...pendingUserReview(),
+            currentStageId: approvalStageId,
+            currentStageIndex: 1,
+            currentStageType: "approval",
+            currentParticipant: { type: "user", userId: boardUserId },
+            completedStageIds: [reviewStageId],
+          },
+        },
+        policy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { userId: boardUserId },
+        commentBody: "Approved.",
+      });
+
+      expect(result.patch.executionState).toMatchObject({
+        status: "completed",
+        completedStageIds: expect.arrayContaining([reviewStageId, approvalStageId]),
+        lastDecisionOutcome: "approved",
+      });
+      expect(result.decision).toMatchObject({ stageType: "approval", outcome: "approved" });
+    });
+
+    it("returns the work to the assignee on in_progress, and resets the round counter", () => {
+      const result = decide("in_progress", "Please add a test for the empty case.", {
+        ...pendingUserReview(),
+        changesRequestedCount: 2,
+      });
+
+      expect(result.patch.status).toBe("in_progress");
+      expect(result.patch.assigneeAgentId).toBe(coderAgentId);
+      expect(result.patch.executionState).toMatchObject({
+        status: "changes_requested",
+        currentStageType: "review",
+        returnAssignee: { type: "agent", agentId: coderAgentId },
+        lastDecisionOutcome: "changes_requested",
+        // A human verdict resets the cap, which exists to stop agent↔agent
+        // ping-pong rather than to limit human review.
+        changesRequestedCount: 0,
+      });
+      expect(result.decision).toMatchObject({
+        stageId: reviewStageId,
+        stageType: "review",
+        outcome: "changes_requested",
+        body: "Please add a test for the empty case.",
+      });
+    });
+
+    it("refuses either verdict without a comment", () => {
+      expect(() => decide("done")).toThrow("Approving a review or approval stage requires a comment");
+      expect(() => decide("done", "   ")).toThrow("Approving a review or approval stage requires a comment");
+      expect(() => decide("in_progress")).toThrow("Requesting changes requires a comment");
+      expect(() => decide("in_progress", "   ")).toThrow("Requesting changes requires a comment");
+    });
+
+    it("dissolves the stage when a board participant sends todo instead", () => {
+      // Why the Request changes control must send `in_progress`: `todo` from a
+      // board actor takes the override branch first, which drops the execution
+      // state with no comment required, no recorded decision, and no return to
+      // the assignee.
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: null,
+          assigneeUserId: ctoUserId,
+          executionPolicy: policy,
+          executionState: pendingUserReview(),
+        },
+        policy,
+        requestedStatus: "todo",
+        requestedAssigneePatch: {},
+        actor: { userId: ctoUserId },
+        allowBoardOverride: true,
+        commentBody: "Sending this back",
+      });
+
+      expect(result.patch).toEqual({ executionState: null });
+      expect(result.decision).toBeUndefined();
+    });
+  });
+
   describe("changes requested flow", () => {
     const policy = twoStagePolicy();
     const reviewStageId = policy.stages[0].id;

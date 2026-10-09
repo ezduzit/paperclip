@@ -17,6 +17,7 @@ import {
   filterAttentionItems,
   groupAttentionItems,
   isInlineResolvable,
+  isInlineResolvableForViewer,
   loadAttentionGroupBy,
   NO_GROUP_SENTINEL,
   planAttentionRenderRows,
@@ -100,7 +101,7 @@ describe("isInlineResolvable", () => {
     expect(isInlineResolvable(buildItem({ sourceKind: "review", inlineResolvable: true }))).toBe(true);
   });
 
-  it("keeps a covered review deep-linking (server leaves inlineResolvable off)", () => {
+  it("keeps an agent-covered review deep-linking (server leaves inlineResolvable off)", () => {
     expect(isInlineResolvable(buildItem({ sourceKind: "review", inlineResolvable: false }))).toBe(false);
   });
 
@@ -108,6 +109,55 @@ describe("isInlineResolvable", () => {
     for (const kind of ["recovery_action", "failed_run", "budget_alert", "blocker_attention"] as AttentionSourceKind[]) {
       expect(isInlineResolvable(buildItem({ sourceKind: kind, inlineResolvable: true }))).toBe(false);
     }
+  });
+});
+
+describe("isInlineResolvableForViewer", () => {
+  const reviewItem = (metadata: Record<string, unknown>) =>
+    buildItem({
+      sourceKind: "review",
+      inlineResolvable: true,
+      subject: {
+        kind: "issue",
+        id: "i1",
+        companyId: "c1",
+        title: "t",
+        identifier: null,
+        status: "in_review",
+        href: "/PAP/issues/PAP-1",
+        metadata,
+      },
+    });
+
+  it("inlines a user-owned stage for its own participant", () => {
+    const item = reviewItem({ executionParticipantUserId: "user-1", executionStageType: "review" });
+    expect(isInlineResolvableForViewer(item, "user-1")).toBe(true);
+  });
+
+  it("deep-links the same row for every other viewer", () => {
+    const item = reviewItem({ executionParticipantUserId: "user-1", executionStageType: "approval" });
+    // The decision is one person's to make, so the row cannot be resolved by a
+    // colleague or by an anonymous reader, even though the item carries it.
+    expect(isInlineResolvableForViewer(item, "user-2")).toBe(false);
+    expect(isInlineResolvableForViewer(item, null)).toBe(false);
+  });
+
+  it("keeps a stalled review open to any board viewer", () => {
+    const item = reviewItem({ reviewAttentionState: "stalled" });
+    expect(isInlineResolvableForViewer(item, "user-2")).toBe(true);
+    expect(isInlineResolvableForViewer(item, null)).toBe(true);
+  });
+
+  it("respects the server flag before asking who is looking", () => {
+    const item = { ...reviewItem({ executionParticipantUserId: "user-1" }), inlineResolvable: false };
+    expect(isInlineResolvableForViewer(item, "user-1")).toBe(false);
+  });
+
+  it("leaves every non-review source to the item's own flag", () => {
+    for (const kind of ["approval", "issue_thread_interaction", "join_request"] as AttentionSourceKind[]) {
+      expect(isInlineResolvableForViewer(buildItem({ sourceKind: kind, inlineResolvable: true }), null)).toBe(true);
+    }
+    expect(isInlineResolvableForViewer(buildItem({ sourceKind: "failed_run", inlineResolvable: true }), "user-1")).toBe(false);
   });
 });
 
