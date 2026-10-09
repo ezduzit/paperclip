@@ -27,11 +27,13 @@ import {
   attentionStatus,
   attentionTaskRef,
   decideByLabel,
-  isInlineResolvable,
+  isInlineResolvableForViewer,
   sourceMeta,
 } from "../lib/attention";
+import { readExecutionStageDecisionMetadata } from "../lib/execution-stage-decision";
 import { cn, relativeTime } from "../lib/utils";
 import { DecisionTriageStrip } from "./DecisionTriageStrip";
+import { ExecutionStageDecisionActions } from "./ExecutionStageDecisionActions";
 import { InteractionAudienceLine } from "./InteractionAudienceLine";
 import { StatusGlyph } from "./StatusGlyph";
 import { Button } from "./ui/button";
@@ -129,7 +131,7 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
   // The task this row belongs to, whichever field the feed put it in.
   const taskRef = attentionTaskRef(item);
   const isHidden = variant === "hidden";
-  const inline = !isHidden && isInlineResolvable(item);
+  const inline = !isHidden && isInlineResolvableForViewer(item, currentUserId);
   const href = item.subject.href;
   const snoozedUntil = item.dismissal?.kind === "snooze" ? item.dismissal.snoozedUntil : null;
   const detailLine = attentionDetailLine(item) ?? item.whyNow;
@@ -803,8 +805,21 @@ function InlineResolver({
   }
 
   if (item.sourceKind === "review") {
-    // Inline only for stalled reviews (server sets inlineResolvable then); the
-    // subject IS the issue, so its id is the decision target.
+    // The subject IS the issue, so its id is the decision target either way.
+    // A pending stage owned by the viewing user takes the stage decision — the
+    // row only reaches here for that user (`isInlineResolvableForViewer`).
+    // Everything else inline is a stalled review, which has its own verbs.
+    const stage = readExecutionStageDecisionMetadata(item.subject.metadata, currentUserId);
+    if (stage) {
+      return (
+        <ExecutionStageDecisionActions
+          issueId={item.subject.id}
+          companyId={companyId}
+          stageType={stage.stageType}
+          footerSlot={toggle}
+        />
+      );
+    }
     return (
       <StalledReviewActions
         issueId={item.subject.id}

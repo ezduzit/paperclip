@@ -36,8 +36,12 @@ const ACTION_PAST_TENSE: Record<StalledReviewDecisionAction, string> = {
 /**
  * The three review verbs an operator can take on a *stalled* in-review issue —
  * one with no reviewer, interaction, approval, or monitor path left (PAP-16080
- * §4.4). Shared by the issue-page review panel and the /decisions card so both
- * surfaces resolve the same way: POST /issues/:id/stalled-review-decision.
+ * §4.4). Rendered by the /decisions card, which resolves it with
+ * POST /issues/:id/stalled-review-decision.
+ *
+ * Not for a *pending* execution stage: that stage has a participant who owns
+ * the verdict, and it must keep its policy state, so it uses
+ * `ExecutionStageDecisionActions` instead.
  *
  * `request_changes` requires a note (mirrors `stalledReviewDecisionSchema`);
  * `approve` and `send_back` take the note optionally. Approve → `done`; the

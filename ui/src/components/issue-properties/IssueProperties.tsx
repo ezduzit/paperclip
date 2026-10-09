@@ -47,6 +47,8 @@ import { getRecentProjectIds } from "../../lib/recent-projects";
 import { orderItemsBySelectedAndRecent } from "../../lib/recent-selections";
 import { formatAssigneeUserLabel, formatUserLabel } from "../../lib/assignees";
 import { buildExecutionPolicy, stageParticipantValues } from "../../lib/issue-execution-policy";
+import { executionStageDecisionTarget } from "../../lib/execution-stage-decision";
+import { ExecutionStageDecisionActions } from "../ExecutionStageDecisionActions";
 import { useExecutionPolicy } from "../../hooks/useExecutionPolicy";
 import {
   formatMonitorAbsolute,
@@ -1063,6 +1065,11 @@ export function IssueProperties({
       </button>
     </PropertyRow>
   );
+  // The stage the viewer owns, if any. This is the issue page's only decision
+  // control, and it sits outside the `policyAvailable` gate below: the decision
+  // comes from the live execution state, so an unreadable *policy* must not take
+  // away the verdict the stage is waiting for.
+  const viewerStageDecision = executionStageDecisionTarget(issue.executionState, currentUserId);
   const currentExecutionLabel = (() => {
     if (!issue.executionState?.currentStageType) return null;
     const stageLabel = issue.executionState.currentStageType === "review" ? "Review" : "Approval";
@@ -2678,6 +2685,22 @@ export function IssueProperties({
             <span className="text-sm truncate min-w-0" title={currentExecutionLabel}>{currentExecutionLabel}</span>
           </PropertyRow>
         )}
+
+        {viewerStageDecision && companyId ? (
+          <div
+            className="flex w-full min-w-0 flex-col gap-2 py-1"
+            data-testid="issue-execution-stage-decision"
+          >
+            <span className="text-xs text-muted-foreground">
+              {viewerStageDecision.stageType === "approval" ? "Your approval" : "Your review"}
+            </span>
+            <ExecutionStageDecisionActions
+              issueId={issue.id}
+              companyId={companyId}
+              stageType={viewerStageDecision.stageType}
+            />
+          </div>
+        ) : null}
 
         {showScheduledRetryRow && scheduledRetry?.scheduledRetryReason === "workspace_busy" ? (
           <PropertyRow label="Workspace">

@@ -9,6 +9,7 @@ import type {
   AttentionSourceKind,
   AttentionWorkspaceRef,
 } from "@paperclipai/shared";
+import { readExecutionStageDecisionMetadata } from "./execution-stage-decision";
 
 export type AttentionListOptions = AttentionFeedQuery;
 
@@ -18,12 +19,13 @@ export type AttentionListOptions = AttentionFeedQuery;
  * budget) expose verbs too rich to safely inline here, so they open their
  * surface.
  *
- * `review` is inline *only when stalled* (PAP-16080 §4.4): a stalled review has
- * no interaction/approval/monitor to open, so the three review verbs
- * (approve / request changes / send back) actuate in-row — the server flips
- * `inlineResolvable` on for exactly those rows (`isInlineResolvable` still ANDs
- * that flag). A *covered* review keeps deep-linking, since its real action
- * lives on the issue (the pending card, a monitor, a live run).
+ * `review` is inline for a stalled review (PAP-16080 §4.4) and for a pending
+ * execution stage owned by a *user* participant: neither has an
+ * interaction/approval/monitor to open, so their verbs actuate in-row — the
+ * server flips `inlineResolvable` on for exactly those rows
+ * (`isInlineResolvable` still ANDs that flag). A review covered by an *agent*
+ * participant keeps deep-linking, since its real action lives on the issue (the
+ * pending card, a monitor, a live run).
  */
 export const INLINE_RESOLVABLE_SOURCE_KINDS: ReadonlySet<AttentionSourceKind> = new Set<AttentionSourceKind>([
   "approval",
@@ -35,6 +37,24 @@ export const INLINE_RESOLVABLE_SOURCE_KINDS: ReadonlySet<AttentionSourceKind> = 
 
 export function isInlineResolvable(item: AttentionItem): boolean {
   return item.inlineResolvable && INLINE_RESOLVABLE_SOURCE_KINDS.has(item.sourceKind);
+}
+
+/**
+ * `isInlineResolvable` plus the one viewer check the feed cannot make for us.
+ *
+ * `inlineResolvable` describes the item: it says the row carries a decision, not
+ * that the reader holds it. For a user-owned execution stage only that user can
+ * decide, so every other viewer keeps the Open link and reads the issue instead.
+ * A stalled review stays open to any board viewer, which is the point of it.
+ */
+export function isInlineResolvableForViewer(
+  item: AttentionItem,
+  currentUserId: string | null | undefined,
+): boolean {
+  if (!isInlineResolvable(item)) return false;
+  if (item.sourceKind !== "review") return true;
+  if (item.subject.metadata?.reviewAttentionState === "stalled") return true;
+  return !!readExecutionStageDecisionMetadata(item.subject.metadata, currentUserId);
 }
 
 /**

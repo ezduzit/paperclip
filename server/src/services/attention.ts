@@ -1665,6 +1665,10 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         const state = parseIssueExecutionState(review.executionState);
         const currentParticipant = state?.status === "pending" ? state.currentParticipant : null;
         const hasHumanParticipant = currentParticipant?.type === "user";
+        // The user who owns the pending stage. Only this viewer gets the inline
+        // decision controls, so the row has to name them; without an id nobody
+        // can match, and the row stays a deep link.
+        const participantUserId = hasHumanParticipant ? currentParticipant?.userId ?? null : null;
         const pendingApprovalId = pendingApprovalByIssueId.get(review.id) ?? null;
         const reviewAttention = reviewAttentionByIssueId.get(review.id);
         const stalled = reviewAttention?.state === "stalled";
@@ -1682,6 +1686,15 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           sourceKind: "review",
           subject: stalled
             ? { ...reviewSubject, metadata: { ...reviewSubject.metadata, reviewAttentionState: "stalled" } }
+            : participantUserId
+            ? {
+                ...reviewSubject,
+                metadata: {
+                  ...reviewSubject.metadata,
+                  executionStageType: state?.currentStageType ?? null,
+                  executionParticipantUserId: participantUserId,
+                },
+              }
             : reviewSubject,
           whyNow: stalled
             ? "Issue is in review without a maintained reviewer, interaction, approval, monitor, run, wake, or recovery path."
@@ -1699,7 +1712,12 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
                 { id: "approve", label: "Approve", description: "Approve the review and advance the issue." },
                 { id: "request_changes", label: "Request changes", description: "Return the issue to the assignee with changes requested." },
               ),
-          inlineResolvable: stalled,
+          // A stalled review resolves in-row, and so does a pending stage whose
+          // participant is a user: that user decides it with Approve / Request
+          // changes. Both carry a decision the feed can take. A covered review
+          // with an *agent* participant still deep-links, because its action
+          // belongs to the agent, not to any viewer.
+          inlineResolvable: stalled || !!participantUserId,
           entryRule: stalled
             ? "issues.status = 'in_review' and reviewAttention.state = 'stalled'."
             : "issues.status = 'in_review' and human reviewer, user assignee, or linked pending approval exists.",
